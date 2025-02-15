@@ -50,8 +50,10 @@ python main.py --mode train --tree-type cart --n-estimators 100
 
 ### Command Line Options
 
-- `--mode`: Choose between 'train' or 'load' [default: train]
+- `--mode`: Choose between 'train', 'load', or 'predict' [default: train]
 - `--model-path`: Path to save/load model [default: models/random_forest.pkl]
+- `--predict-file`: Path to new data file for prediction [required for predict mode]
+- `--output-file`: Path to save prediction results [optional]
 - `--tree-type`: Type of decision tree to use ('cart' or 'c4.5') [default: cart]
 - `--n-estimators`: Number of trees in the forest [default: 100]
 - `--max-depth`: Maximum depth of each tree [default: None]
@@ -79,6 +81,36 @@ python main.py --mode train --tree-type c4.5 --n-estimators 150 --min-samples-sp
 python main.py --mode load --model-path models/my_model.pkl
 ```
 
+4. Predict on new data:
+```bash
+python main.py --mode predict --model-path models/my_model.pkl --predict-file data/capture.pcap_Flow.csv --output-file results/predictions.csv
+```
+
+### Visualization Tool
+
+A tool script is provided to convert a `sklearn.tree.export_text` compatible tree text file to a more readable HTML file. Use the following command to perform the conversion:
+
+```bash
+python tools/visualize.py path/to/decision_tree.txt path/to/decision_tree.html
+```
+
+### Feature Name Mapping
+
+When using the predict mode with data from a different version of CICFlowMeter, the script automatically maps the following feature names:
+```python
+feature_map = {
+    "Dst Port": "Destination Port",
+    "Total Fwd Packet": "Total Fwd Packets",
+    "Total Bwd packets": "Total Backward Packets",
+    "Total Length of Fwd Packet": "Total Length of Fwd Packets",
+    "Total Length of Bwd Packet": "Total Length of Bwd Packets"
+}
+```
+
+For simulated attack data:
+- Traffic from source IP '10.0.2.50' is labeled as 'DoS slowloris'
+- All other traffic is labeled as 'BENIGN'
+
 ## Project Structure
 
 ```
@@ -92,6 +124,8 @@ tree_web_ddos_detect/
 ├── main.py                # Command line interface
 ├── models/                # Directory for saved models
 └── data/                  # Directory for datasets
+├── tools/                 # Directory for utility scripts
+│   └── visualize.py       # Script for visualizing decision trees
 ```
 
 ## Implementation Details

@@ -13,6 +13,33 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
+# Define the features used by the model
+USED_FEATURES = [
+    "Destination Port",
+    "Flow Duration",
+    "Total Fwd Packets",
+    "Total Backward Packets",
+    "Total Length of Fwd Packets",
+    "Total Length of Bwd Packets",
+    "Fwd Packet Length Max",
+    "Fwd Packet Length Min",
+    "Fwd Packet Length Mean",
+    "Fwd Packet Length Std",
+]
+
+# process different feature names by different version of CICFlowmeter
+FEATURE_MAP = {
+    "Dst Port": "Destination Port",
+    "Total Fwd Packet": "Total Fwd Packets",
+    "Total Bwd packets": "Total Backward Packets",
+    "Total Length of Fwd Packet": "Total Length of Fwd Packets",
+    "Total Length of Bwd Packet": "Total Length of Bwd Packets",
+    "Fwd Pkt Len Max": "Fwd Packet Length Max",
+    "Fwd Pkt Len Min": "Fwd Packet Length Min",
+    "Fwd Pkt Len Mean": "Fwd Packet Length Mean",
+    "Fwd Pkt Len Std": "Fwd Packet Length Std",
+}
+
 
 def parse_args():
     """Parse command line arguments."""
@@ -23,9 +50,9 @@ def parse_args():
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["train", "load"],
+        choices=["train", "load", "predict"],
         default="train",
-        help="Whether to train a new model or load an existing one",
+        help="Whether to train a new model, load and evaluate, or predict on new data",
     )
 
     parser.add_argument(
@@ -33,6 +60,18 @@ def parse_args():
         type=str,
         default="models/random_forest.pkl",
         help="Path to save/load the model",
+    )
+
+    parser.add_argument(
+        "--predict-file",
+        type=str,
+        help="Path to the new data file for prediction",
+    )
+
+    parser.add_argument(
+        "--output-file",
+        type=str,
+        help="Path to save prediction results",
     )
 
     # Random Forest specific parameters
@@ -119,8 +158,8 @@ def load_and_preprocess_data():
     y = data["Label"]
     x = data.drop(columns=["Label", "Flow Bytes/s"])
 
-    # keep first 10 features of x
-    x = x.iloc[:, :10]
+    # keep only the used features
+    x = x[USED_FEATURES]
 
     return x, y
 
@@ -197,31 +236,126 @@ def evaluate_model(model, x_test, y_test):
     print(classification_report(y_test, y_pred))
 
 
+def load_and_preprocess_predict_data(file_path: str) -> pd.DataFrame:
+    """Load and preprocess new data for prediction.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the new data file
+
+    Returns
+    -------
+    pd.DataFrame
+        Preprocessed features ready for prediction
+    """
+    # Read the new data file
+    data = pd.read_csv(file_path, low_memory=False)
+
+    # Map feature names using feature_map
+    data = data.rename(columns=FEATURE_MAP)
+
+    # Verify all required features are present
+    missing_features = set(USED_FEATURES) - set(data.columns)
+    if missing_features:
+        raise ValueError(
+            f"Missing required features in the input file: {missing_features}\n"
+            f"Available features: {data.columns.tolist()}\n"
+            f"Feature mapping used: {FEATURE_MAP}"
+        )
+
+    # Create features DataFrame with only the required features
+    x = data[USED_FEATURES]
+
+    # Add labels based on source IP
+    data["Label"] = "BENIGN"
+    data.loc[data["Src IP"] == "10.0.2.50", "Label"] = "DoS slowloris"
+
+    return x, data
+
+
+def predict_new_data(model: RandomForestClassifier, args):
+    """Make predictions on new data file.
+
+    Parameters
+    ----------
+    model : RandomForestClassifier
+        Trained model to use for predictions
+    args : argparse.Namespace
+        Command line arguments
+    """
+    # Load and preprocess new data
+    print(f"\nLoading new data from {args.predict_file}...")
+    try:
+        x, data = load_and_preprocess_predict_data(args.predict_file)
+    except ValueError as e:
+        print(f"Error processing input file: {e}")
+        exit(1)
+
+    # Make predictions
+    print("Making predictions...")
+    start_time = time()
+    predictions = model.predict(x)
+    predict_time = time() - start_time
+    print(f"Prediction completed in {predict_time:.2f} seconds")
+
+    # Add predictions to the data
+    data["Predicted"] = predictions
+
+    # Calculate accuracy against simulated labels
+    accuracy = accuracy_score(data["Label"], predictions)
+    print(f"\nAccuracy against simulated labels: {accuracy:.4f}")
+    print("\nClassification Report (against simulated labels):")
+    print(classification_report(data["Label"], predictions))
+
+    # Save results if output file is specified
+    if args.output_file:
+        output_dir = os.path.dirname(args.output_file)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        data.to_csv(args.output_file, index=False)
+        print(f"\nResults saved to {args.output_file}")
+
+
 if __name__ == "__main__":
     # Parse command line arguments
     args = parse_args()
 
-    # Load and preprocess data
-    x, y = load_and_preprocess_data()
+    if args.mode == "predict" and not args.predict_file:
+        print("Error: --predict-file is required for predict mode")
+        exit(1)
 
-    if args.mode == "train":
-        # Train new model
-        model, x_test, y_test = train_model(args, x, y)
-    else:
-        # Load existing model and prepare test data
+    if args.mode == "predict":
         try:
-            model, x_test, y_test = load_model_and_prepare_data(
-                model_path=args.model_path,
-                x=x,
-                y=y,
-                test_size=args.test_size,
-                random_state=args.random_state,
-            )
+            # Load the model
+            model = RandomForestClassifier.load_model(args.model_path)
+            # Make predictions
+            predict_new_data(model, args)
         except FileNotFoundError:
-            print(
-                f"No model found at {args.model_path}. Please train a new model first."
-            )
+            print(f"No model found at {args.model_path}. Please train a model first.")
             exit(1)
+    else:
+        # Load and preprocess training data
+        x, y = load_and_preprocess_data()
 
-    # Evaluate model
-    evaluate_model(model, x_test, y_test)
+        if args.mode == "train":
+            # Train new model
+            model, x_test, y_test = train_model(args, x, y)
+        else:
+            # Load existing model and prepare test data
+            try:
+                model, x_test, y_test = load_model_and_prepare_data(
+                    model_path=args.model_path,
+                    x=x,
+                    y=y,
+                    test_size=args.test_size,
+                    random_state=args.random_state,
+                )
+            except FileNotFoundError:
+                print(
+                    f"No model found at {args.model_path}. Please train a new model first."
+                )
+                exit(1)
+
+        # Evaluate model
+        evaluate_model(model, x_test, y_test)
